@@ -1,0 +1,88 @@
+name: Build picasso XNU baseline
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: picasso-xnu-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_15.0.1.app/Contents/Developer
+      MACOS_VERSION: '13.5'
+      KERNEL_CONFIG: DEVELOPMENT
+      MACHINE_CONFIG: SWEET
+      ARCH_CONFIG: ARM64
+      CODEQL: '0'
+      BUILDKC: '0'
+      BUILDLIB: '0'
+    steps:
+      - name: Checkout build recipe
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Require the verified Xcode toolchain
+        shell: bash
+        run: |
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          test "$(xcodebuild -version | head -n 1)" = 'Xcode 15.0.1'
+          test "$(xcodebuild -version | tail -n 1)" = 'Build version 15A507'
+          xcrun --find iig
+          sw_vers
+
+      - name: Fetch pinned public sources
+        shell: bash
+        run: |
+          git init -q upstream-sweet
+          git -C upstream-sweet fetch -q --depth 1 https://github.com/dipa-studio/ios-sweet fdad0de8dc0e75c5ea84762adc03f7232dc91f19
+          git -C upstream-sweet checkout -q --detach FETCH_HEAD
+          git init -q dxb
+          git -C dxb fetch -q --depth 1 https://github.com/blacktop/darwin-xnu-build 663906528d1cd5ea8fde7de6f16de73db9511549
+          git -C dxb checkout -q --detach FETCH_HEAD
+          python3 scripts/prepare.py
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          brew install jq gum bash cmake ninja
+          # DXB checks xcodes before checking preinstalled Xcode. It never invokes
+          # xcodes when the selected Xcode already exists. Refuse any unexpected
+          # installer invocation instead of downloading another Xcode.
+          if ! command -v xcodes >/dev/null 2>&1; then
+            mkdir -p "$RUNNER_TEMP/picasso-tools"
+            printf '#!/bin/sh\necho "Xcode installation is disabled; use the pinned preinstalled Xcode" >&2\nexit 1\n' > "$RUNNER_TEMP/picasso-tools/xcodes"
+            chmod +x "$RUNNER_TEMP/picasso-tools/xcodes"
+            echo "$RUNNER_TEMP/picasso-tools" >> "$GITHUB_PATH"
+          fi
+
+      - name: Compile full XNU
+        working-directory: dxb
+        shell: bash
+        env:
+          MAKEFLAGS: '-k'
+        run: bash build.sh
+
+      - name: Verify source patch and collect the kernel
+        shell: bash
+        run: python3 scripts/verify-build.py
+
+      - name: Upload kernel and provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: picasso-xnu-baseline
+          path: |
+            out/kernel.development.sweet
+            out/SHA256SUMS
+            out/build-manifest.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 6
