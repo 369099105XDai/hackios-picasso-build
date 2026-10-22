@@ -95,6 +95,37 @@ def output(*args):
     return subprocess.check_output(args, text=True).strip()
 
 
+def collect_dependencies(dxb):
+    # These six repositories are fetched on the pinned clean DEVELOPMENT build.
+    # Libsystem is different: DXB's libsystem_headers() only clones it when the
+    # System.framework directory does not already exist after xnu_headers().
+    dependencies = {}
+
+    def revision(name):
+        directory = dxb / name
+        require(directory.is_dir() and (directory / ".git").is_dir(),
+                f"missing dependency repository: {name}")
+        commit = output("git", "-C", str(directory), "rev-parse", "HEAD")
+        require(len(commit) == 40 and all(c in "0123456789abcdef" for c in commit),
+                f"invalid dependency revision: {name}")
+        return commit
+
+    for name in ("xnu", "bootstrap_cmds", "dtrace", "AvailabilityVersions",
+                 "libplatform", "libdispatch"):
+        dependencies[name] = revision(name)
+
+    framework = "fakeroot/System/Library/Frameworks/System.framework"
+    if (dxb / "Libsystem").exists():
+        dependencies["Libsystem"] = revision("Libsystem")
+        condition = {"status": "fetched", "build_script_function": "libsystem_headers"}
+    else:
+        require((dxb / framework).is_dir(),
+                "Libsystem absent and its DXB System.framework guard is not satisfied")
+        condition = {"status": "not_fetched", "build_script_function": "libsystem_headers",
+                     "reason": "System.framework guard satisfied", "guard_path": framework}
+    return dependencies, {"Libsystem": condition}
+
+
 def collect():
     verify_revision(ROOT / "upstream-sweet", UPSTREAM_SHA)
     verify_revision(ROOT / "dxb", DXB_SHA)
@@ -113,10 +144,7 @@ def collect():
     require(sdk_version == "14.0", "unexpected Xcode SDK version")
     repo = os.environ["GITHUB_REPOSITORY"]
     run_id = os.environ["GITHUB_RUN_ID"]
-    dependencies = {}
-    for name in ("xnu", "bootstrap_cmds", "dtrace", "AvailabilityVersions", "Libsystem",
-                 "libplatform", "libdispatch"):
-        dependencies[name] = output("git", "-C", str(ROOT / "dxb" / name), "rev-parse", "HEAD")
+    dependencies, dependency_conditions = collect_dependencies(ROOT / "dxb")
     kernel_info.update(filename=kernel.name, size=len(data), sha256=sha256(data))
     manifest = {
         "version": 1,
@@ -126,6 +154,7 @@ def collect():
         "configuration": CONFIGURATION, "source_files": source_hashes,
         "framebuffer_patch_sha256": PATCH_SHA,
         "kernel": kernel_info, "dependencies": dependencies,
+        "dependency_conditions": dependency_conditions,
         "toolchain": {"xcode_version": xcode_version, "sdk_version": sdk_version,
                       "kdk": "13.5_22G74"},
         "github": {"repository": repo, "sha": os.environ["GITHUB_SHA"],
