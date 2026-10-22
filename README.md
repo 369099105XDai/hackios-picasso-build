@@ -12,7 +12,13 @@ The baseline uses [ios-sweet](https://github.com/dipa-studio/ios-sweet) commit
 macOS source release 13.5 / XNU 8796.141.3, ARM64, DEVELOPMENT, SWEET.
 The [upstream baseline run](https://github.com/dipa-studio/ios-sweet/actions/runs/39158169212)
 completed on 2026-10-18 using Xcode 15.0.1 build 15A507 and KDK 13.5 build 22G74.
-This repository's own build must still succeed before the cloud path is verified.
+This repository's [baseline build](https://github.com/369099105XDai/hackios-picasso-build/actions/runs/39806737745)
+succeeded on 2026-10-22 at recipe commit
+`7c69056d3f99fd4a7ac3f9c1cd39f4ad32d651d1`. The downloaded kernel passed local
+Mach-O/framebuffer verification and a 60-second QEMU high-RAM run, reaching the
+RAM root and static test PID 1 with repeated heartbeats. This build has not been
+tested on a phone and does not add touch, USB, or iOS graphical userspace support.
+Kernel SHA-256: `a718544c10dc739ecdeb95a0039e748e2fbcaaff09b5e35626432776cdf55dd4`.
 
 ## Run
 
