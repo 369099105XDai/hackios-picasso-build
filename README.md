@@ -1,8 +1,14 @@
 # Picasso XNU cloud build
 
 Build the known XNU baseline for Redmi K30 5G / picasso on a GitHub-hosted Mac.
-The recipe adds the four reviewed early-framebuffer address changes to the
-existing SWEET kernel sources. It does not contain a phone installer, Android
+The recipe adds the four reviewed early-framebuffer address changes and a
+default-disabled, RAM-root GCC snapshot to the existing SWEET kernel sources.
+The diagnostic variant is `picasso-gcc-diag-v1`. It requires `rd=md0`, explicit
+`picassogccdiag=1`, and a four-byte `PGD1` property named `picasso-gcc-diag` under
+`/chosen`. It maps two GCC regions read-only and reads eight status words;
+it never accesses DWC3, PHY, QSCRATCH, UFS, or DMA. Missing opt-in prints a skip
+message (or stays silent when the boot argument is absent).
+It does not contain a phone installer, Android
 boot image, device backup, Apple userland, or an adapted touch/USB driver.
 
 The baseline uses [ios-sweet](https://github.com/dipa-studio/ios-sweet) commit
@@ -12,7 +18,7 @@ The baseline uses [ios-sweet](https://github.com/dipa-studio/ios-sweet) commit
 macOS source release 13.5 / XNU 8796.141.3, ARM64, DEVELOPMENT, SWEET.
 The [upstream baseline run](https://github.com/dipa-studio/ios-sweet/actions/runs/39158169212)
 completed on 2026-10-18 using Xcode 15.0.1 build 15A507 and KDK 13.5 build 22G74.
-This repository's [baseline build](https://github.com/369099105XDai/hackios-picasso-build/actions/runs/39806737745)
+The earlier framebuffer-only [baseline build](https://github.com/369099105XDai/hackios-picasso-build/actions/runs/39806737745)
 succeeded on 2026-10-22 at recipe commit
 `7c69056d3f99fd4a7ac3f9c1cd39f4ad32d651d1`. The downloaded kernel passed local
 Mach-O/framebuffer verification and a 60-second QEMU high-RAM run, reaching the
@@ -24,8 +30,9 @@ Kernel SHA-256: `a718544c10dc739ecdeb95a0039e748e2fbcaaff09b5e35626432776cdf55dd
 
 Open **Actions → Build picasso XNU baseline → Run workflow**. There is no automatic
 push trigger. The job fetches pinned public sources, requires Xcode 15.0.1,
-compiles the full kernel, and verifies the final hashes of the three patched
-source files. Missing or silently skipped framebuffer patches fail the job.
+compiles the full kernel, and verifies the final hashes of all six changed
+source files plus the diagnostic entry symbol. Missing or silently skipped
+framebuffer or diagnostic patches fail the job. The manifest records both patches.
 
 On success, download **picasso-xnu-baseline** within one day. Its three files are:
 

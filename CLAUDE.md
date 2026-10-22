@@ -1,7 +1,8 @@
 # Picasso XNU cloud build
 
 Read README.md and the workflow before making changes. This repository contains
-only a public build recipe and the reviewed early-framebuffer source patch.
+only a public build recipe, the reviewed early-framebuffer source patch, and
+the default-disabled RAM-root GCC read-only diagnostic patch.
 
 - Keep upstream revisions and the Xcode version explicit. Do not silently move
   to a newer toolchain when the required runner or Xcode is unavailable.

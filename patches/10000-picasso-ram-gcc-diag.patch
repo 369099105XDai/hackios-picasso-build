@@ -1,0 +1,125 @@
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -111,6 +111,7 @@
+ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_usb.c			standard
++bsd/dev/picasso_diag.c			standard
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1039,6 +1039,12 @@
+ #endif /* CONFIG_IMAGEBOOT */
+ #endif /* CONFIG_BASESYSTEMROOT */
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* Explicit picasso RAM-root diagnostic; independent of UFS startup. */
++	extern void picasso_diag_init(const char *root_name);
++	picasso_diag_init(rootdevice);
++#endif
++
+ 	/* Initialize signal state for process 0. */
+ 	bsd_init_kprintf("calling siginit\n");
+ 	siginit(kernproc);
+--- /dev/null
++++ b/bsd/dev/picasso_diag.c
+@@ -0,0 +1,97 @@
++/*
++ * One-shot picasso RAM-root GCC snapshot. These values describe inherited
++ * state only; they do not authorize access to DWC3, PHY, or QSCRATCH.
++ * No register is written, no clock/power vote is changed, and no DMA or
++ * storage driver is started. The real-phone loader must validate the FDT
++ * before supplying the explicit /chosen opt-in property.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <mach/vm_prot.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++
++/* The BSD header view may hide this declaration behind MACH_KERNEL_PRIVATE. */
++extern vm_offset_t ml_io_map_with_prot(vm_offset_t phys_addr, vm_size_t size,
++    vm_prot_t prot);
++void picasso_diag_init(const char *root_name) __attribute__((noinline));
++
++static bool picasso_diag_attempted;
++
++static uint32_t
++picasso_gcc_read32(vm_offset_t base, uint32_t offset)
++{
++	uint32_t value = *(volatile const uint32_t *)(base + offset);
++	__asm__ volatile ("dmb oshld" ::: "memory");
++	return value;
++}
++
++void
++picasso_diag_init(const char *root_name)
++{
++	int enabled = 0;
++	DTEntry chosen;
++	void const *property = NULL;
++	unsigned int property_size = 0;
++	uint32_t magic;
++	vm_offset_t gcc_usb, gcc_ref;
++	uint32_t snapshot[8];
++
++	if (picasso_diag_attempted ||
++	    !PE_parse_boot_argn("picassogccdiag", &enabled, sizeof(enabled)) ||
++	    enabled != 1) {
++		return;
++	}
++	if (root_name == NULL || strcmp(root_name, "md0") != 0) {
++		printf("PICASSO GCC: SKIP ROOT\n");
++		return;
++	}
++	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) != kSuccess ||
++	    SecureDTGetProperty(chosen, "picasso-gcc-diag", &property,
++	    &property_size) != kSuccess || property == NULL || property_size != 4) {
++		printf("PICASSO GCC: SKIP ADT\n");
++		return;
++	}
++	/* Decode explicitly: the property is four little-endian bytes, "PGD1". */
++	const uint8_t *bytes = property;
++	magic = (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
++	    ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
++	if (magic != 0x31444750u) {
++		printf("PICASSO GCC: SKIP ADT\n");
++		return;
++	}
++	picasso_diag_attempted = true;
++
++	/* The VM layer rounds to its page size; accesses remain these 8 words. */
++	gcc_usb = ml_io_map_with_prot(0x0010f000, 0x1000, VM_PROT_READ);
++	if (gcc_usb == 0) {
++		printf("PICASSO GCC: SKIP MAP USB\n");
++		return;
++	}
++	gcc_ref = ml_io_map_with_prot(0x0018c000, 0x1000, VM_PROT_READ);
++	if (gcc_ref == 0) {
++		printf("PICASSO GCC: SKIP MAP CLKREF\n");
++		return;
++	}
++	printf("PICASSO GCC: BEGIN\n");
++	snapshot[0] = picasso_gcc_read32(gcc_usb, 0x000);
++	snapshot[1] = picasso_gcc_read32(gcc_usb, 0x004);
++	snapshot[2] = picasso_gcc_read32(gcc_usb, 0x010);
++	snapshot[3] = picasso_gcc_read32(gcc_usb, 0x018);
++	snapshot[4] = picasso_gcc_read32(gcc_usb, 0x01c);
++	snapshot[5] = picasso_gcc_read32(gcc_usb, 0x07c);
++	snapshot[6] = picasso_gcc_read32(gcc_usb, 0x080);
++	snapshot[7] = picasso_gcc_read32(gcc_ref, 0x010);
++	printf("PICASSO GCC: CORE_BCR[0010f000]=%08x\n", snapshot[0]);
++	printf("PICASSO GCC: GDSCR[0010f004]=%08x\n", snapshot[1]);
++	printf("PICASSO GCC: MASTER[0010f010]=%08x\n", snapshot[2]);
++	printf("PICASSO GCC: SLEEP[0010f018]=%08x\n", snapshot[3]);
++	printf("PICASSO GCC: UTMI[0010f01c]=%08x\n", snapshot[4]);
++	printf("PICASSO GCC: CFG_NOC[0010f07c]=%08x\n", snapshot[5]);
++	printf("PICASSO GCC: AGGRE_AXI[0010f080]=%08x\n", snapshot[6]);
++	printf("PICASSO GCC: CLKREF[0018c010]=%08x\n", snapshot[7]);
++	printf("PICASSO GCC: DONE\n");
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */

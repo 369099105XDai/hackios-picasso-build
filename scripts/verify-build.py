@@ -9,12 +9,16 @@ import shutil
 import struct
 import subprocess
 
-from prepare import DXB_SHA, PATCH_SHA, ROOT, UPSTREAM_SHA, require, verify_revision
+from prepare import (DXB_SHA, PATCH_SHA, ROOT, UPSTREAM_SHA, VARIANT,
+                     require, verify_patches, verify_revision)
 
 SOURCE_HASHES = {
     "osfmk/arm64/start.s": "9ac117c33f1acfe863cb87884665c7b2e9bb19cf36b679d091663808d1719080",
     "osfmk/arm64/arm_vm_init.c": "73f1960ed7afbcdb2e692343a4097009549e958e70f9c8fc4a24fba2de033617",
     "osfmk/arm64/sweet_early.c": "672fdfc7a01ade2844e68deb177180768d24491044ab94370c82f556f4c91f80",
+    "bsd/conf/files": "58e3c69b3d978106c01baac4ab088194a89315f9a2979add7e603f22896b0b57",
+    "bsd/kern/bsd_init.c": "5bd32f81f67921ad16ee616b31fac053d525063affab500fb27c5d3c1346ebdc",
+    "bsd/dev/picasso_diag.c": "af1dc899b7e71e54a6580ed4cb89a438f237af3a63c5fccdacaf9fd692d2057d",
 }
 CONFIGURATION = {
     "macos_version": "13.5", "kernel_config": "DEVELOPMENT",
@@ -72,7 +76,7 @@ def inspect_kernel(data):
     symoff, nsyms, stroff, strsize = symtab
     require(symoff + nsyms * 16 <= len(data) and stroff + strsize <= len(data),
             "symbol table outside kernel")
-    strings, early_fb = data[stroff:stroff + strsize], []
+    strings, early_fb, diag_init = data[stroff:stroff + strsize], [], []
     for i in range(nsyms):
         strx, kind, section, desc, value = struct.unpack_from("<IBBHQ", data, symoff + i * 16)
         require(strx < strsize, "symbol name outside string table")
@@ -81,6 +85,9 @@ def inspect_kernel(data):
         if strings[strx:end] == b"_early_fb":
             require(kind & 0x0E == 0x0E, "framebuffer symbol is not section-defined")
             early_fb.append(value)
+        elif strings[strx:end] == b"_picasso_diag_init":
+            require(kind & 0x0E == 0x0E, "diagnostic entry is not section-defined")
+            diag_init.append(value)
     require(len(early_fb) == 1, "missing or duplicate early framebuffer symbol")
     matches = [s for s in segments if s[0] == "__DATA"
                and s[1] <= early_fb[0] and early_fb[0] + 8 <= s[1] + s[4]]
@@ -88,7 +95,11 @@ def inspect_kernel(data):
     segment = matches[0]
     pointer = struct.unpack_from("<Q", data, segment[3] + early_fb[0] - segment[1])[0]
     require(pointer == 0xA0000000, "kernel still has the wrong early framebuffer base")
-    return {"entry_va": hex(entry), "early_fb_va": hex(early_fb[0])}
+    require(len(diag_init) == 1, "missing or duplicate picasso diagnostic entry")
+    require(any(s[0] == "__TEXT_EXEC" and s[1] <= diag_init[0] < s[1] + s[4]
+                for s in segments), "diagnostic entry is outside executable kernel segment")
+    return {"entry_va": hex(entry), "early_fb_va": hex(early_fb[0]),
+            "picasso_diag_init_va": hex(diag_init[0])}
 
 
 def output(*args):
@@ -132,8 +143,7 @@ def collect():
     for key, value in CONFIGURATION.items():
         require(os.environ.get(key.upper()) == value, f"unexpected configuration: {key}")
     source_hashes = verify_sources(ROOT / "dxb/xnu")
-    require(sha256((ROOT / "patches/9999-picasso-early-framebuffer.patch").read_bytes())
-            == PATCH_SHA, "patch content changed")
+    patches = verify_patches()
     kernel = ROOT / "dxb/fakeroot/System/Library/Kernels/kernel.development.sweet"
     require(kernel.is_file() and not kernel.is_symlink(), "expected kernel artifact absent")
     data = kernel.read_bytes()
@@ -148,11 +158,13 @@ def collect():
     kernel_info.update(filename=kernel.name, size=len(data), sha256=sha256(data))
     manifest = {
         "version": 1,
-        "purpose": "Full XNU compilation baseline with picasso early framebuffer; not flashable",
+        "variant": VARIANT,
+        "purpose": "Opt-in picasso RAM-root GCC diagnostic; not flashable",
         "upstream": {"repository": "dipa-studio/ios-sweet", "commit": UPSTREAM_SHA},
         "build_script": {"repository": "blacktop/darwin-xnu-build", "commit": DXB_SHA},
         "configuration": CONFIGURATION, "source_files": source_hashes,
         "framebuffer_patch_sha256": PATCH_SHA,
+        "patches": patches,
         "kernel": kernel_info, "dependencies": dependencies,
         "dependency_conditions": dependency_conditions,
         "toolchain": {"xcode_version": xcode_version, "sdk_version": sdk_version,
@@ -176,7 +188,7 @@ def collect():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-sources-only", type=Path,
-                        help="only verify the three final source hashes in this XNU tree")
+                        help="only verify all final source hashes for this variant in this XNU tree")
     args = parser.parse_args()
     if args.check_sources_only is not None:
         print(json.dumps(verify_sources(args.check_sources_only), indent=2))
